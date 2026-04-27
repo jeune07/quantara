@@ -1,8 +1,5 @@
 const express = require('express');
-const { renderPage } = require('../extractor/fetchPage');
-const { cleanHtml } = require('../extractor/cleanHtml');
-const { htmlToMarkdown } = require('../extractor/htmlToMarkdown');
-const { extractProduct } = require('../extractor/claudeExtract');
+const { extractFromUrl, ExtractError } = require('../extractor/extractFromUrl');
 const { productToWorkbookBuffer } = require('../output/toExcel');
 
 const router = express.Router();
@@ -23,53 +20,30 @@ function validateUrl(raw) {
   return { url: parsed.toString() };
 }
 
-async function runPipeline(url) {
-  let rendered;
-  try {
-    rendered = await renderPage(url);
-  } catch (e) {
-    const err = new Error(`Failed to render page: ${e.message}`);
-    err.status = 502;
-    throw err;
+function errorPayload(err) {
+  if (err instanceof ExtractError) {
+    return { status: err.status, body: { error: err.message, code: err.code } };
   }
-
-  const cleaned = cleanHtml(rendered.html);
-  const markdown = htmlToMarkdown(cleaned);
-
-  let product;
-  try {
-    product = await extractProduct({
-      markdown,
-      sourceUrl: rendered.finalUrl || url,
-      pageTitle: rendered.title,
-    });
-  } catch (e) {
-    const err = new Error(`Anthropic extraction failed: ${e.message}`);
-    err.status = 502;
-    throw err;
-  }
-
-  return product;
+  return { status: 500, body: { error: err.message || 'Internal error' } };
 }
 
 router.post('/extract', async (req, res) => {
   const v = validateUrl(req.body && req.body.url);
   if (v.error) return res.status(400).json({ error: v.error });
-
   try {
-    const product = await runPipeline(v.url);
+    const product = await extractFromUrl(v.url);
     res.json({ product });
-  } catch (e) {
-    res.status(e.status || 500).json({ error: e.message });
+  } catch (err) {
+    const { status, body } = errorPayload(err);
+    res.status(status).json(body);
   }
 });
 
 router.post('/extract.xlsx', async (req, res) => {
   const v = validateUrl(req.body && req.body.url);
   if (v.error) return res.status(400).json({ error: v.error });
-
   try {
-    const product = await runPipeline(v.url);
+    const product = await extractFromUrl(v.url);
     const buffer = await productToWorkbookBuffer(product);
     const filename =
       (product.sku || product.title || 'product')
@@ -79,13 +53,11 @@ router.post('/extract.xlsx', async (req, res) => {
       'Content-Type',
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     );
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="${filename}"`
-    );
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(Buffer.from(buffer));
-  } catch (e) {
-    res.status(e.status || 500).json({ error: e.message });
+  } catch (err) {
+    const { status, body } = errorPayload(err);
+    res.status(status).json(body);
   }
 });
 

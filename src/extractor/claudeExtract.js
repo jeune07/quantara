@@ -2,12 +2,13 @@ const Anthropic = require('@anthropic-ai/sdk');
 const { recordProductTool } = require('./productSchema');
 
 const MODEL = 'claude-sonnet-4-6';
+const MAX_TOKENS = 4096;
 
 const SYSTEM_PROMPT =
   'You extract structured product information from a single product page.\n\n' +
-  'You will be given the page content rendered as Markdown. Identify the product on ' +
-  'that page and call the record_product tool with the fields you can read off the ' +
-  'page. Rules:\n\n' +
+  'You will be given the page content (as Markdown text and/or as a screenshot). ' +
+  'Identify the product on that page and call the record_product tool with the ' +
+  'fields you can read off the page. Rules:\n\n' +
   '- Only include data that is visibly present. Never fabricate prices, SKUs, ' +
   'specs, or descriptions.\n' +
   '- For specs, copy the labels as they appear on the page.\n' +
@@ -30,52 +31,87 @@ function getClient() {
   return client;
 }
 
-async function extractProduct({ markdown, sourceUrl, pageTitle }) {
-  const c = getClient();
+function logUsage(label, usage) {
+  if (!usage) return;
+  console.log(
+    `[claudeExtract:${label}] tokens: input=${usage.input_tokens || 0} ` +
+      `cache_read=${usage.cache_read_input_tokens || 0} ` +
+      `cache_create=${usage.cache_creation_input_tokens || 0} ` +
+      `output=${usage.output_tokens || 0}`
+  );
+}
 
-  const userText =
+// Both extract paths share the same system prompt + tool — Anthropic prompt
+// caching covers both, so back-to-back text and vision calls share the cached
+// prefix.
+async function callClaude({ userContent, label }) {
+  const c = getClient();
+  const response = await c.messages.create({
+    model: MODEL,
+    max_tokens: MAX_TOKENS,
+    system: [
+      { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
+    ],
+    tools: [{ ...recordProductTool, cache_control: { type: 'ephemeral' } }],
+    tool_choice: { type: 'tool', name: 'record_product' },
+    messages: [{ role: 'user', content: userContent }],
+  });
+
+  logUsage(label, response.usage);
+
+  const toolUse = response.content.find((b) => b.type === 'tool_use');
+  if (!toolUse) {
+    throw new Error('Claude did not return a tool_use block');
+  }
+  return toolUse.input;
+}
+
+async function extractFromText({ markdown, sourceUrl, pageTitle }) {
+  const text =
     `Source URL: ${sourceUrl}\n` +
     (pageTitle ? `Page <title>: ${pageTitle}\n` : '') +
     '\n--- BEGIN PAGE MARKDOWN ---\n' +
     markdown +
     '\n--- END PAGE MARKDOWN ---';
 
-  const response = await c.messages.create({
-    model: MODEL,
-    max_tokens: 4096,
-    system: [
-      {
-        type: 'text',
-        text: SYSTEM_PROMPT,
-        cache_control: { type: 'ephemeral' },
-      },
-    ],
-    tools: [
-      {
-        ...recordProductTool,
-        cache_control: { type: 'ephemeral' },
-      },
-    ],
-    tool_choice: { type: 'tool', name: 'record_product' },
-    messages: [{ role: 'user', content: userText }],
+  const input = await callClaude({
+    userContent: [{ type: 'text', text }],
+    label: 'text',
   });
-
-  const toolUse = response.content.find((b) => b.type === 'tool_use');
-  if (!toolUse) {
-    throw new Error('Claude did not return a tool_use block');
-  }
-
-  const product = { ...toolUse.input, sourceUrl };
-
-  const usage = response.usage || {};
-  console.log(
-    `[claudeExtract] tokens: input=${usage.input_tokens || 0} ` +
-      `cache_read=${usage.cache_read_input_tokens || 0} ` +
-      `cache_create=${usage.cache_creation_input_tokens || 0} ` +
-      `output=${usage.output_tokens || 0}`
-  );
-
-  return product;
+  return { ...input, sourceUrl };
 }
 
-module.exports = { extractProduct, MODEL };
+async function extractFromImage({ screenshot, sourceUrl, pageTitle, markdownHint }) {
+  const blocks = [
+    {
+      type: 'text',
+      text:
+        `Source URL: ${sourceUrl}\n` +
+        (pageTitle ? `Page <title>: ${pageTitle}\n` : '') +
+        'Page text was unavailable or unhelpful — extract what you can see in ' +
+        'the screenshot below.',
+    },
+    {
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: 'image/png',
+        data: screenshot.toString('base64'),
+      },
+    },
+  ];
+  if (markdownHint && markdownHint.trim()) {
+    blocks.push({
+      type: 'text',
+      text:
+        '\nFor reference, here is whatever readable text we did capture from ' +
+        'the page (may be partial or empty):\n\n' +
+        markdownHint.slice(0, 8000),
+    });
+  }
+
+  const input = await callClaude({ userContent: blocks, label: 'vision' });
+  return { ...input, sourceUrl };
+}
+
+module.exports = { extractFromText, extractFromImage, MODEL };

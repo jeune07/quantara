@@ -146,7 +146,8 @@
           if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
           jsonOut.textContent = JSON.stringify(data.product, null, 2);
           result.classList.remove('hidden');
-          setStatus('Done.');
+          const mode = data.product && data.product.extractionMode;
+          setStatus('Done.' + (mode ? ' (mode: ' + mode + ')' : ''));
         } catch (err) {
           setStatus(err.message, true);
         } finally {

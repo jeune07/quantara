@@ -66,7 +66,7 @@
       ul.products { list-style: none; padding: 0; margin: 0; }
       ul.products li {
         display: grid;
-        grid-template-columns: 1fr auto auto auto auto;
+        grid-template-columns: 1fr auto auto auto auto auto;
         gap: 12px; align-items: baseline;
         padding: 8px 0; border-bottom: 1px solid var(--border);
       }
@@ -88,6 +88,11 @@
       }
       .delta.up { color: #ff8a8a; }
       .delta.down { color: #6dd58a; }
+      .group-badge {
+        font-size: 11px; padding: 2px 8px; border-radius: 10px;
+        background: var(--bg); border: 1px solid var(--border);
+        color: var(--muted); cursor: help;
+      }
       .econ-toggle {
         background: #20232a; border: 1px solid var(--border);
         color: var(--muted); border-radius: 4px;
@@ -222,6 +227,7 @@ https://www.example.com/products/widget-b"
         <ul id="list" class="products"></ul>
         <div class="actions">
           <button id="download" class="primary" disabled>Download .xlsx</button>
+          <button id="group" disabled>Group similar</button>
           <button id="clear" class="danger" disabled>Clear all</button>
         </div>
       </section>
@@ -240,6 +246,7 @@ https://www.example.com/products/widget-b"
       const listEl = $('list');
       const countEl = $('count');
       const downloadBtn = $('download');
+      const groupBtn = $('group');
       const clearBtn = $('clear');
       const csvFile = $('csvFile');
       const urlsText = $('urlsText');
@@ -398,6 +405,7 @@ https://www.example.com/products/widget-b"
         countEl.textContent =
           batch.length === 1 ? '1 product' : batch.length + ' products';
         downloadBtn.disabled = batch.length === 0;
+        groupBtn.disabled = batch.length < 2;
         clearBtn.disabled = batch.length === 0;
 
         if (batch.length === 0) {
@@ -448,6 +456,17 @@ https://www.example.com/products/widget-b"
             delta.textContent = '';
           }
 
+          const groupBadge = document.createElement('span');
+          if (p._group) {
+            groupBadge.className = 'group-badge';
+            groupBadge.textContent = 'G' + p._group.id;
+            const reasonLine = p._group.reason ? '\n' + p._group.reason : '';
+            groupBadge.title =
+              p._group.canonicalName +
+              ' (confidence: ' + (p._group.confidence || 'medium') + ')' +
+              reasonLine;
+          }
+
           const econToggle = makeEconToggle(p, () => {
             if (econOpen.has(i)) econOpen.delete(i);
             else econOpen.add(i);
@@ -467,7 +486,7 @@ https://www.example.com/products/widget-b"
             renderBatch();
           });
 
-          li.append(name, mode, delta, econToggle, rm);
+          li.append(name, mode, delta, groupBadge, econToggle, rm);
 
           if (econOpen.has(i)) {
             li.appendChild(
@@ -704,6 +723,49 @@ https://www.example.com/products/widget-b"
           setStatus(err.message, 'error');
         } finally {
           downloadBtn.disabled = batch.length === 0;
+        }
+      });
+
+      groupBtn.addEventListener('click', async () => {
+        if (batch.length < 2) return;
+        groupBtn.disabled = true;
+        setStatus('Asking Claude to cluster ' + batch.length + ' products by canonical identity...');
+        try {
+          const r = await fetch('/api/group', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ products: batch }),
+          });
+          const data = await r.json();
+          if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+
+          // Reset previous grouping, then assign from the response.
+          batch.forEach((p) => { delete p._group; });
+          const groups = data.groups || [];
+          groups.forEach((g, gi) => {
+            const id = gi + 1;
+            for (const i of g.memberIndices) {
+              if (batch[i]) {
+                batch[i]._group = {
+                  id,
+                  canonicalName: g.canonicalName,
+                  confidence: g.confidence,
+                  reason: g.reason,
+                };
+              }
+            }
+          });
+          saveBatch(batch);
+          renderBatch();
+          const multi = groups.filter((g) => g.memberIndices.length > 1).length;
+          setStatus(
+            'Grouped into ' + groups.length + ' canonical product(s); ' +
+              multi + ' group(s) have multiple members.'
+          );
+        } catch (err) {
+          setStatus(err.message, 'error');
+        } finally {
+          groupBtn.disabled = batch.length < 2;
         }
       });
 

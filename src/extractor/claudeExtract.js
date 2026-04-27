@@ -1,7 +1,6 @@
-const Anthropic = require('@anthropic-ai/sdk');
+const { getClient, MODEL, logUsage } = require('../utils/anthropic');
 const { recordProductTool, recordProductsTool } = require('./productSchema');
 
-const MODEL = 'claude-sonnet-4-6';
 const MAX_TOKENS = 4096;
 
 const SYSTEM_PROMPT =
@@ -19,27 +18,6 @@ const SYSTEM_PROMPT =
   '- If a field is not present, omit it or leave it as an empty string/object/array. ' +
   'Do not guess.\n' +
   '- Always call the tool exactly once.';
-
-let client;
-function getClient() {
-  if (!client) {
-    if (!process.env.ANTHROPIC_API_KEY) {
-      throw new Error('ANTHROPIC_API_KEY is not set');
-    }
-    client = new Anthropic();
-  }
-  return client;
-}
-
-function logUsage(label, usage) {
-  if (!usage) return;
-  console.log(
-    `[claudeExtract:${label}] tokens: input=${usage.input_tokens || 0} ` +
-      `cache_read=${usage.cache_read_input_tokens || 0} ` +
-      `cache_create=${usage.cache_creation_input_tokens || 0} ` +
-      `output=${usage.output_tokens || 0}`
-  );
-}
 
 // Both extract paths share the same system prompt + tool — Anthropic prompt
 // caching covers both, so back-to-back text and vision calls share the cached

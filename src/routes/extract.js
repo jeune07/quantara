@@ -2,6 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const { extractFromUrl, ExtractError } = require('../extractor/extractFromUrl');
 const { extractFromPdf } = require('../extractor/extractFromPdf');
+const { groupProducts } = require('../analysis/groupProducts');
 const { productsToWorkbookBuffer } = require('../output/toExcel');
 const {
   recordSnapshot,
@@ -110,6 +111,17 @@ router.post('/extract-pdf', upload.single('file'), async (req, res) => {
   } catch (err) {
     const { status, body } = errorPayload(err);
     res.status(status).json(body);
+  }
+});
+
+router.post('/group', async (req, res) => {
+  const v = validateProducts(req.body && req.body.products);
+  if (v.error) return res.status(400).json({ error: v.error });
+  try {
+    const groups = await groupProducts(v.products);
+    res.json({ groups });
+  } catch (err) {
+    res.status(502).json({ error: err.message, code: 'group_failed' });
   }
 });
 

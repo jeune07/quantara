@@ -65,6 +65,7 @@ function addProductsSheet(wb, products) {
     (p) => p && p._history && p._history.previous
   );
   const anyEconomics = products.some((p) => computeMargin(p) != null);
+  const anyGroups = products.some((p) => p && p._group && p._group.id != null);
 
   const ws = wb.addWorksheet('Products');
   const columns = [
@@ -96,6 +97,13 @@ function addProductsSheet(wb, products) {
       { header: 'Net Revenue', key: 'netRevenue', width: 13 },
       { header: 'Profit', key: 'profit', width: 10 },
       { header: 'Margin %', key: 'marginPercent', width: 10 }
+    );
+  }
+  if (anyGroups) {
+    columns.push(
+      { header: 'Group #', key: 'groupId', width: 8 },
+      { header: 'Canonical Name', key: 'canonicalName', width: 40 },
+      { header: 'Group Confidence', key: 'groupConfidence', width: 14 }
     );
   }
   ws.columns = columns;
@@ -135,6 +143,14 @@ function addProductsSheet(wb, products) {
         row.netRevenue = Number(m.netRevenue.toFixed(2));
         row.profit = Number(m.profit.toFixed(2));
         row.marginPercent = Number(m.marginPercent.toFixed(2));
+      }
+    }
+    if (anyGroups) {
+      const g = p._group;
+      if (g) {
+        row.groupId = g.id;
+        row.canonicalName = g.canonicalName || '';
+        row.groupConfidence = g.confidence || '';
       }
     }
     const xlRow = ws.addRow(row);

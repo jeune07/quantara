@@ -66,7 +66,7 @@
       ul.products { list-style: none; padding: 0; margin: 0; }
       ul.products li {
         display: grid;
-        grid-template-columns: 1fr auto auto auto auto auto;
+        grid-template-columns: 1fr auto auto auto auto auto auto;
         gap: 12px; align-items: baseline;
         padding: 8px 0; border-bottom: 1px solid var(--border);
       }
@@ -93,6 +93,13 @@
         background: var(--bg); border: 1px solid var(--border);
         color: var(--muted); cursor: help;
       }
+      .find-btn {
+        background: transparent; border: 1px solid var(--border);
+        color: var(--muted); border-radius: 4px;
+        padding: 2px 8px; cursor: pointer; font-size: 11px;
+      }
+      .find-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+      .find-btn:disabled { opacity: 0.5; cursor: not-allowed; }
       .econ-toggle {
         background: #20232a; border: 1px solid var(--border);
         color: var(--muted); border-radius: 4px;
@@ -400,6 +407,17 @@ https://www.example.com/products/widget-b"
 
       const econOpen = new Set(); // indices currently expanded
 
+      async function findCompetitorsFor(product) {
+        const r = await fetch('/api/find-competitors', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ product }),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+        return data.candidates || [];
+      }
+
       function renderBatch() {
         listEl.innerHTML = '';
         countEl.textContent =
@@ -456,6 +474,43 @@ https://www.example.com/products/widget-b"
             delta.textContent = '';
           }
 
+          const findBtn = document.createElement('button');
+          findBtn.className = 'find-btn';
+          findBtn.textContent = 'find others';
+          findBtn.title = 'Find this product on other retailers and extract them';
+          findBtn.addEventListener('click', async () => {
+            findBtn.disabled = true;
+            const original = findBtn.textContent;
+            findBtn.textContent = 'searching…';
+            setStatus('Searching the web for ' + (p.title || 'this product') + '...');
+            try {
+              const candidates = await findCompetitorsFor(p);
+              if (candidates.length === 0) {
+                setStatus('No competitor pages found.', 'warn');
+                return;
+              }
+              const urls = candidates.map((c) => c.url);
+              findBtn.textContent = 'extracting ' + urls.length + '…';
+              setStatus(
+                'Found ' + urls.length + ' candidate page(s) on: ' +
+                  candidates.map((c) => c.retailer).join(', ') +
+                  '. Extracting each — this may take a minute.'
+              );
+              const results = await runQueue(urls, BULK_CONCURRENCY, (done, total) => {
+                findBtn.textContent = 'extracting ' + done + '/' + total + '…';
+              });
+              setStatus(
+                'Discovery: added ' + results.ok + ' product(s), ' +
+                  results.failed + ' failed. Click "Group similar" to cluster.'
+              );
+            } catch (err) {
+              setStatus(err.message, 'error');
+            } finally {
+              findBtn.textContent = original;
+              findBtn.disabled = false;
+            }
+          });
+
           const groupBadge = document.createElement('span');
           if (p._group) {
             groupBadge.className = 'group-badge';
@@ -486,7 +541,7 @@ https://www.example.com/products/widget-b"
             renderBatch();
           });
 
-          li.append(name, mode, delta, groupBadge, econToggle, rm);
+          li.append(name, mode, delta, findBtn, groupBadge, econToggle, rm);
 
           if (econOpen.has(i)) {
             li.appendChild(

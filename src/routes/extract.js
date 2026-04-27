@@ -3,6 +3,7 @@ const multer = require('multer');
 const { extractFromUrl, ExtractError } = require('../extractor/extractFromUrl');
 const { extractFromPdf } = require('../extractor/extractFromPdf');
 const { groupProducts } = require('../analysis/groupProducts');
+const { findCompetitors } = require('../analysis/findCompetitors');
 const { productsToWorkbookBuffer } = require('../output/toExcel');
 const {
   recordSnapshot,
@@ -111,6 +112,22 @@ router.post('/extract-pdf', upload.single('file'), async (req, res) => {
   } catch (err) {
     const { status, body } = errorPayload(err);
     res.status(status).json(body);
+  }
+});
+
+router.post('/find-competitors', async (req, res) => {
+  const product = req.body && req.body.product;
+  if (!product || typeof product !== 'object') {
+    return res.status(400).json({ error: 'product is required' });
+  }
+  if (!product.title && !product.sku) {
+    return res.status(400).json({ error: 'product needs at least a title or sku' });
+  }
+  try {
+    const candidates = await findCompetitors(product);
+    res.json({ candidates });
+  } catch (err) {
+    res.status(502).json({ error: err.message, code: 'find_competitors_failed' });
   }
 });
 

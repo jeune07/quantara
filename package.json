@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "main": "fetch-cotter-pins.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "scrape:tiles": "node scrape-to-excel.js",
+    "scrape:skus": "node scrape-skus-to-excel.js"
   },
   "keywords": [],
   "author": "",

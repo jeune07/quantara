@@ -124,8 +124,8 @@ router.post('/find-competitors', async (req, res) => {
     return res.status(400).json({ error: 'product needs at least a title or sku' });
   }
   try {
-    const candidates = await discoverCompetitors(product);
-    res.json({ candidates });
+    const result = await discoverCompetitors(product);
+    res.json(result);
   } catch (err) {
     res.status(502).json({ error: err.message, code: 'find_competitors_failed' });
   }

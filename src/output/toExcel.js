@@ -33,12 +33,38 @@ function refOf(product) {
   return product.sku || product.title || product.sourceUrl || '(unnamed)';
 }
 
+// Server-side mirror of the client's computeMargin. Centralizing the formula
+// here means a future REST/CLI client gets the same math the UI shows.
+function computeMargin(product) {
+  const e = product && product._economics;
+  if (!e) return null;
+  const sale =
+    product.price && typeof product.price.amount === 'number'
+      ? product.price.amount
+      : null;
+  if (sale == null || sale <= 0) return null;
+  const cost = Number(e.cost) || 0;
+  const ship = Number(e.shipping) || 0;
+  const feeP = Number(e.feesPercent) || 0;
+  const feeF = Number(e.feesFixed) || 0;
+  if (cost === 0 && ship === 0 && feeP === 0 && feeF === 0) return null;
+  const fees = sale * (feeP / 100) + feeF;
+  const netRevenue = sale - fees;
+  const profit = netRevenue - cost - ship;
+  return {
+    cost, ship, feeP, feeF, fees,
+    netRevenue, profit,
+    marginPercent: (profit / sale) * 100,
+  };
+}
+
 function addProductsSheet(wb, products) {
-  // Optional history columns are only shown when at least one product has a
-  // previous snapshot — keeps the sheet narrow when nobody uses the feature.
+  // Optional column groups are only shown when at least one product has data
+  // for them — keeps the sheet narrow when nobody uses the feature.
   const anyHistory = products.some(
     (p) => p && p._history && p._history.previous
   );
+  const anyEconomics = products.some((p) => computeMargin(p) != null);
 
   const ws = wb.addWorksheet('Products');
   const columns = [
@@ -59,6 +85,17 @@ function addProductsSheet(wb, products) {
       { header: 'Δ Price', key: 'priceChange', width: 12 },
       { header: 'Δ %', key: 'pricePercent', width: 10 },
       { header: 'Last Seen', key: 'lastSeen', width: 20 }
+    );
+  }
+  if (anyEconomics) {
+    columns.push(
+      { header: 'Cost', key: 'cost', width: 10 },
+      { header: 'Shipping', key: 'shipping', width: 10 },
+      { header: 'Fees %', key: 'feesPercent', width: 9 },
+      { header: 'Fees $', key: 'feesFixed', width: 10 },
+      { header: 'Net Revenue', key: 'netRevenue', width: 13 },
+      { header: 'Profit', key: 'profit', width: 10 },
+      { header: 'Margin %', key: 'marginPercent', width: 10 }
     );
   }
   ws.columns = columns;
@@ -87,6 +124,18 @@ function addProductsSheet(wb, products) {
           ? Number(delta.pricePercent.toFixed(2))
           : '';
       row.lastSeen = prev ? prev.extractedAt : '';
+    }
+    if (anyEconomics) {
+      const m = computeMargin(p);
+      if (m) {
+        row.cost = m.cost;
+        row.shipping = m.ship;
+        row.feesPercent = m.feeP;
+        row.feesFixed = m.feeF;
+        row.netRevenue = Number(m.netRevenue.toFixed(2));
+        row.profit = Number(m.profit.toFixed(2));
+        row.marginPercent = Number(m.marginPercent.toFixed(2));
+      }
     }
     const xlRow = ws.addRow(row);
     if (p.sourceUrl) hyperlinkCell(xlRow.getCell('sourceUrl'), p.sourceUrl);

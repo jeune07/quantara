@@ -66,7 +66,7 @@
       ul.products { list-style: none; padding: 0; margin: 0; }
       ul.products li {
         display: grid;
-        grid-template-columns: 1fr auto auto auto;
+        grid-template-columns: 1fr auto auto auto auto;
         gap: 12px; align-items: baseline;
         padding: 8px 0; border-bottom: 1px solid var(--border);
       }
@@ -88,6 +88,40 @@
       }
       .delta.up { color: #ff8a8a; }
       .delta.down { color: #6dd58a; }
+      .econ-toggle {
+        background: #20232a; border: 1px solid var(--border);
+        color: var(--muted); border-radius: 4px;
+        padding: 2px 8px; cursor: pointer; font-size: 11px;
+      }
+      .econ-toggle:hover { color: var(--text); }
+      .econ-toggle.filled.profit { color: #6dd58a; }
+      .econ-toggle.filled.loss { color: #ff8a8a; }
+      .econ-row {
+        grid-column: 1 / -1;
+        margin-top: 8px; padding: 10px;
+        background: var(--bg); border: 1px solid var(--border);
+        border-radius: 6px;
+        display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline;
+      }
+      .econ-row label {
+        display: flex; flex-direction: column; gap: 2px;
+        font-size: 11px; color: var(--muted);
+      }
+      .econ-row input {
+        width: 84px; padding: 4px 6px;
+        background: var(--panel); color: var(--text);
+        border: 1px solid var(--border); border-radius: 4px;
+        font: 12px ui-monospace, Menlo, monospace;
+      }
+      .econ-row input:focus { outline: none; border-color: var(--accent); }
+      .econ-summary {
+        margin-left: auto; padding-left: 12px;
+        border-left: 1px solid var(--border);
+        font: 12px ui-monospace, Menlo, monospace;
+      }
+      .econ-summary .row { display: block; color: var(--muted); }
+      .econ-summary .profit-line.profit { color: #6dd58a; }
+      .econ-summary .profit-line.loss { color: #ff8a8a; }
       .remove {
         background: transparent; border: none; color: var(--muted);
         padding: 2px 6px; cursor: pointer; font-size: 13px;
@@ -229,6 +263,122 @@ https://www.example.com/products/widget-b"
         else if (kind === 'warn') status.classList.add('warn');
       }
 
+      // ---- Margin calculator -------------------------------------------
+      // Per-product economics live on the product as `_economics`. Pure
+      // numbers in (cost, shipping, feesPercent, feesFixed) → margin out.
+      // computeMargin returns null if there's no usable sale price or no
+      // economics filled in yet.
+      function computeMargin(product) {
+        const e = product && product._economics;
+        if (!e) return null;
+        const sale =
+          product.price && typeof product.price.amount === 'number'
+            ? product.price.amount
+            : null;
+        if (sale == null || sale <= 0) return null;
+        const cost = Number(e.cost) || 0;
+        const ship = Number(e.shipping) || 0;
+        const feeP = Number(e.feesPercent) || 0;
+        const feeF = Number(e.feesFixed) || 0;
+        if (cost === 0 && ship === 0 && feeP === 0 && feeF === 0) return null;
+        const fees = sale * (feeP / 100) + feeF;
+        const netRevenue = sale - fees;
+        const profit = netRevenue - cost - ship;
+        const marginPercent = (profit / sale) * 100;
+        return { sale, cost, ship, feeP, feeF, fees, netRevenue, profit, marginPercent };
+      }
+
+      function fmtMoney(n) {
+        if (n == null || !isFinite(n)) return '';
+        return (n < 0 ? '-$' : '$') + Math.abs(n).toFixed(2);
+      }
+
+      function makeEconToggle(product, onChange) {
+        const btn = document.createElement('button');
+        btn.className = 'econ-toggle';
+        btn.title = 'Cost, shipping, fees → margin';
+        const m = computeMargin(product);
+        if (m) {
+          btn.classList.add('filled', m.profit >= 0 ? 'profit' : 'loss');
+          btn.textContent =
+            fmtMoney(m.profit) + ' (' + m.marginPercent.toFixed(0) + '%)';
+        } else {
+          btn.textContent = '$ costs';
+        }
+        btn.addEventListener('click', onChange);
+        return btn;
+      }
+
+      function makeEconRow(product, onCommit) {
+        const row = document.createElement('div');
+        row.className = 'econ-row';
+        const e = product._economics || {};
+
+        function field(key, label, placeholder) {
+          const wrap = document.createElement('label');
+          const lbl = document.createElement('span');
+          lbl.textContent = label;
+          const input = document.createElement('input');
+          input.type = 'number';
+          input.step = '0.01';
+          input.min = '0';
+          input.placeholder = placeholder;
+          input.value = e[key] != null && e[key] !== '' ? e[key] : '';
+          input.addEventListener('input', () => {
+            const ec = product._economics || (product._economics = {});
+            ec[key] = input.value === '' ? '' : Number(input.value);
+            onCommit();
+          });
+          wrap.append(lbl, input);
+          return wrap;
+        }
+
+        row.append(
+          field('cost', 'Cost ($)', '0.00'),
+          field('shipping', 'Shipping ($)', '0.00'),
+          field('feesPercent', 'Fees (%)', '0'),
+          field('feesFixed', 'Fees ($)', '0.00')
+        );
+
+        const summary = document.createElement('div');
+        summary.className = 'econ-summary';
+        function refreshSummary() {
+          const m = computeMargin(product);
+          summary.innerHTML = '';
+          if (!m) {
+            const r = document.createElement('span');
+            r.className = 'row';
+            r.textContent =
+              product.price && product.price.amount
+                ? 'Fill at least one cost field.'
+                : 'Need a sale price on this product.';
+            summary.appendChild(r);
+            return;
+          }
+          const lines = [
+            ['Sale', fmtMoney(m.sale)],
+            ['Fees', fmtMoney(m.fees)],
+            ['Net revenue', fmtMoney(m.netRevenue)],
+            ['Profit', fmtMoney(m.profit), m.profit >= 0 ? 'profit' : 'loss'],
+            ['Margin', m.marginPercent.toFixed(1) + '%'],
+          ];
+          for (const [label, value, cls] of lines) {
+            const r = document.createElement('span');
+            r.className = 'row' + (label === 'Profit' ? ' profit-line' : '');
+            if (cls) r.classList.add(cls);
+            r.textContent = label + ': ' + value;
+            summary.appendChild(r);
+          }
+        }
+        refreshSummary();
+        row.addEventListener('input', refreshSummary);
+        row.append(summary);
+
+        return row;
+      }
+
+      const econOpen = new Set(); // indices currently expanded
+
       function renderBatch() {
         listEl.innerHTML = '';
         countEl.textContent =
@@ -284,17 +434,39 @@ https://www.example.com/products/widget-b"
             delta.textContent = '';
           }
 
+          const econToggle = makeEconToggle(p, () => {
+            if (econOpen.has(i)) econOpen.delete(i);
+            else econOpen.add(i);
+            renderBatch();
+          });
+
           const rm = document.createElement('button');
           rm.className = 'remove';
           rm.title = 'Remove from batch';
           rm.textContent = '✕';
           rm.addEventListener('click', () => {
             batch.splice(i, 1);
+            // Indices shift on remove — clear the open set rather than try to
+            // remap; the user just collapses everything, which is fine.
+            econOpen.clear();
             saveBatch(batch);
             renderBatch();
           });
 
-          li.append(name, mode, delta, rm);
+          li.append(name, mode, delta, econToggle, rm);
+
+          if (econOpen.has(i)) {
+            li.appendChild(
+              makeEconRow(p, () => {
+                saveBatch(batch);
+                // Refresh just the toggle label; full rerender would lose
+                // input focus while typing.
+                const newToggle = makeEconToggle(p, () => {});
+                econToggle.className = newToggle.className;
+                econToggle.textContent = newToggle.textContent;
+              })
+            );
+          }
           listEl.appendChild(li);
         });
       }

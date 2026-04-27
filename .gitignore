@@ -27,3 +27,8 @@ Thumbs.db
 
 rendered.html
 *.xlsx
+prodpage.html
+catalog-page-list.json
+scrape.log
+patch.log
+.claude/scheduled_tasks.lock

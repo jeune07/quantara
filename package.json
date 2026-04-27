@@ -5,7 +5,8 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "scrape:tiles": "node scrape-to-excel.js",
-    "scrape:skus": "node scrape-skus-to-excel.js"
+    "scrape:skus": "node scrape-skus-to-excel.js",
+    "scrape:catalog": "node scrape-catalog-table.js"
   },
   "keywords": [],
   "author": "",

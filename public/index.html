@@ -100,6 +100,25 @@
       }
       .find-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
       .find-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+      #discoveryPanel h2 button.remove { background: transparent; }
+      .cov-stats { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 12px; }
+      .cov-stat { display: flex; flex-direction: column; }
+      .cov-stat .num { font-size: 18px; font-weight: 600; color: var(--text); }
+      .cov-stat .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+      .cov-section { margin-top: 12px; }
+      .cov-section h3 {
+        font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+        color: var(--muted); margin: 0 0 6px;
+      }
+      .cov-bars { display: grid; gap: 4px; }
+      .cov-bar { display: grid; grid-template-columns: 180px 1fr 36px; gap: 8px; align-items: center; font-size: 12px; }
+      .cov-bar .name { color: var(--text); }
+      .cov-bar .track { background: var(--bg); height: 6px; border-radius: 3px; overflow: hidden; }
+      .cov-bar .fill { background: var(--accent); height: 100%; border-radius: 3px; }
+      .cov-bar .count { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+      .cov-empty { color: var(--warn); font-size: 12px; margin-top: 4px; }
+      .cov-suggestions { margin: 4px 0 0; padding-left: 18px; color: var(--muted); font-size: 12px; }
+      .cov-suggestions li { margin-bottom: 4px; }
       .econ-toggle {
         background: #20232a; border: 1px solid var(--border);
         color: var(--muted); border-radius: 4px;
@@ -221,6 +240,14 @@ https://www.example.com/products/widget-b"
 
       <div id="status" class="status"></div>
 
+      <section id="discoveryPanel" class="panel hidden">
+        <h2>
+          <span>Discovery coverage</span>
+          <button id="discoveryClose" class="remove" title="Dismiss">✕</button>
+        </h2>
+        <div id="discoveryBody"></div>
+      </section>
+
       <section id="latest" class="panel hidden">
         <h2>Most recent extraction</h2>
         <pre id="json"></pre>
@@ -255,6 +282,9 @@ https://www.example.com/products/widget-b"
       const downloadBtn = $('download');
       const groupBtn = $('group');
       const clearBtn = $('clear');
+      const discoveryPanel = $('discoveryPanel');
+      const discoveryBody = $('discoveryBody');
+      const discoveryClose = $('discoveryClose');
       const csvFile = $('csvFile');
       const urlsText = $('urlsText');
       const bulkImport = $('bulkImport');
@@ -415,7 +445,126 @@ https://www.example.com/products/widget-b"
         });
         const data = await r.json();
         if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
-        return data.candidates || [];
+        return {
+          candidates: data.candidates || [],
+          plan: data.plan || [],
+          coverage: data.coverage || null,
+        };
+      }
+
+      discoveryClose.addEventListener('click', () => {
+        discoveryPanel.classList.add('hidden');
+      });
+
+      function renderDiscoveryPanel(sourceProduct, plan, coverage, candidates) {
+        if (!coverage) {
+          discoveryPanel.classList.add('hidden');
+          return;
+        }
+        const cov = coverage;
+        const maxCat = Math.max(1, ...Object.values(cov.byCategory || {}));
+        discoveryBody.innerHTML = '';
+
+        // Headline numbers
+        const stats = document.createElement('div');
+        stats.className = 'cov-stats';
+        const statBlocks = [
+          ['Source', (sourceProduct && sourceProduct.title) || '—'],
+          ['Candidates', cov.totalCandidates],
+          ['Retailers', cov.uniqueRetailers],
+          ['Categories', cov.uniqueCategories],
+          ['Queries Used', cov.queriesPlanned],
+        ];
+        for (const [label, value] of statBlocks) {
+          const blk = document.createElement('div');
+          blk.className = 'cov-stat';
+          const n = document.createElement('span');
+          n.className = 'num';
+          n.textContent = String(value);
+          const l = document.createElement('span');
+          l.className = 'lbl';
+          l.textContent = label;
+          blk.append(n, l);
+          stats.append(blk);
+        }
+        discoveryBody.append(stats);
+
+        // Category breakdown bars
+        if (Object.keys(cov.byCategory).length) {
+          const sec = document.createElement('div');
+          sec.className = 'cov-section';
+          const h = document.createElement('h3');
+          h.textContent = 'By category';
+          const bars = document.createElement('div');
+          bars.className = 'cov-bars';
+          const sorted = Object.entries(cov.byCategory).sort((a, b) => b[1] - a[1]);
+          for (const [cat, n] of sorted) {
+            const row = document.createElement('div');
+            row.className = 'cov-bar';
+            const name = document.createElement('span');
+            name.className = 'name';
+            name.textContent = cat;
+            const track = document.createElement('div');
+            track.className = 'track';
+            const fill = document.createElement('div');
+            fill.className = 'fill';
+            fill.style.width = ((n / maxCat) * 100).toFixed(1) + '%';
+            track.append(fill);
+            const count = document.createElement('span');
+            count.className = 'count';
+            count.textContent = String(n);
+            row.append(name, track, count);
+            bars.append(row);
+          }
+          sec.append(h, bars);
+          discoveryBody.append(sec);
+        }
+
+        // Empty strata
+        if (cov.emptyStrata && cov.emptyStrata.length) {
+          const empty = document.createElement('div');
+          empty.className = 'cov-empty';
+          empty.textContent =
+            'Planned but no results: ' + cov.emptyStrata.join(', ');
+          discoveryBody.append(empty);
+        }
+
+        // Suggestions
+        if (cov.suggestions && cov.suggestions.length) {
+          const sec = document.createElement('div');
+          sec.className = 'cov-section';
+          const h = document.createElement('h3');
+          h.textContent = 'Suggestions';
+          const ul = document.createElement('ul');
+          ul.className = 'cov-suggestions';
+          for (const s of cov.suggestions) {
+            const li = document.createElement('li');
+            li.textContent = s;
+            ul.append(li);
+          }
+          sec.append(h, ul);
+          discoveryBody.append(sec);
+        }
+
+        // Plan rationale
+        if (plan && plan.length) {
+          const sec = document.createElement('div');
+          sec.className = 'cov-section';
+          const h = document.createElement('h3');
+          h.textContent = 'Search plan';
+          const ul = document.createElement('ul');
+          ul.className = 'cov-suggestions';
+          for (const q of plan) {
+            const li = document.createElement('li');
+            li.textContent = '[' + q.stratum + '] ' + q.query +
+              (q.rationale ? ' — ' + q.rationale : '');
+            ul.append(li);
+          }
+          sec.append(h, ul);
+          discoveryBody.append(sec);
+        }
+
+        discoveryPanel.classList.remove('hidden');
       }
 
       function renderBatch() {
@@ -481,20 +630,26 @@ https://www.example.com/products/widget-b"
           findBtn.addEventListener('click', async () => {
             findBtn.disabled = true;
             const original = findBtn.textContent;
-            findBtn.textContent = 'searching…';
-            setStatus('Searching the web for ' + (p.title || 'this product') + '...');
+            findBtn.textContent = 'planning…';
+            setStatus('Planning multi-query discovery for ' + (p.title || 'this product') + '...');
             try {
-              const candidates = await findCompetitorsFor(p);
+              const { candidates, plan, coverage } = await findCompetitorsFor(p);
+              renderDiscoveryPanel(p, plan, coverage, candidates);
               if (candidates.length === 0) {
-                setStatus('No competitor pages found.', 'warn');
+                setStatus(
+                  'Discovery complete — no candidate product pages survived ' +
+                    'URL filtering. See the panel for the search plan and ' +
+                    'suggestions.',
+                  'warn'
+                );
                 return;
               }
               const urls = candidates.map((c) => c.url);
               findBtn.textContent = 'extracting ' + urls.length + '…';
               setStatus(
-                'Found ' + urls.length + ' candidate page(s) on: ' +
-                  candidates.map((c) => c.retailer).join(', ') +
-                  '. Extracting each — this may take a minute.'
+                'Found ' + urls.length + ' product page(s) across ' +
+                  coverage.uniqueCategories + ' category(ies). ' +
+                  'Extracting each — this may take a minute.'
               );
               const results = await runQueue(urls, BULK_CONCURRENCY, (done, total) => {
                 findBtn.textContent = 'extracting ' + done + '/' + total + '…';

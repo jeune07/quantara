@@ -30,6 +30,7 @@ const { planSearchStrategy } = require('./planSearchStrategy');
 const { runSearchPasses } = require('./runSearchPasses');
 const { filterCandidateUrls } = require('./filterCandidateUrls');
 const { categorizeUrl } = require('./categorizeRetailer');
+const { buildCoverage } = require('./coverageReport');
 
 async function discoverCompetitors(product) {
   if (!product || (!product.title && !product.sku)) {
@@ -71,7 +72,8 @@ async function discoverCompetitors(product) {
     };
   });
 
-  return { candidates, plan };
+  const coverage = buildCoverage(candidates, plan);
+  return { candidates, plan, coverage };
 }
 
 module.exports = { discoverCompetitors };

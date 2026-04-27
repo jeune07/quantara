@@ -66,7 +66,7 @@
       ul.products { list-style: none; padding: 0; margin: 0; }
       ul.products li {
         display: grid;
-        grid-template-columns: 1fr auto auto;
+        grid-template-columns: 1fr auto auto auto;
         gap: 12px; align-items: baseline;
         padding: 8px 0; border-bottom: 1px solid var(--border);
       }
@@ -82,6 +82,12 @@
       .mode.text { color: #6dd58a; }
       .mode.vision { color: var(--warn); }
       .mode.hybrid { color: var(--accent); }
+      .delta {
+        font-size: 11px; padding: 2px 6px; border-radius: 4px;
+        background: #20232a; color: var(--muted);
+      }
+      .delta.up { color: #ff8a8a; }
+      .delta.down { color: #6dd58a; }
       .remove {
         background: transparent; border: none; color: var(--muted);
         padding: 2px 6px; cursor: pointer; font-size: 13px;
@@ -262,6 +268,22 @@ https://www.example.com/products/widget-b"
           mode.className = 'mode ' + (m || '');
           mode.textContent = p.extractionMode || '';
 
+          const delta = document.createElement('span');
+          const d = p._history && p._history.delta;
+          if (d && d.priceChange != null) {
+            const up = d.priceChange > 0;
+            delta.className = 'delta ' + (up ? 'up' : 'down');
+            const sign = up ? '+' : '';
+            const pct =
+              d.pricePercent != null
+                ? ' (' + sign + d.pricePercent.toFixed(1) + '%)'
+                : '';
+            delta.textContent = sign + d.priceChange.toFixed(2) + pct;
+            delta.title = 'Price changed since ' + (d.since || 'last extract');
+          } else {
+            delta.textContent = '';
+          }
+
           const rm = document.createElement('button');
           rm.className = 'remove';
           rm.title = 'Remove from batch';
@@ -272,13 +294,15 @@ https://www.example.com/products/widget-b"
             renderBatch();
           });
 
-          li.append(name, mode, rm);
+          li.append(name, mode, delta, rm);
           listEl.appendChild(li);
         });
       }
 
       // Single extract — used by both the form and bulk import.
       // Returns { ok: true, product } | { ok: false, error }.
+      // The server-returned `history` (previous snapshot + delta) is attached
+      // to the product as `_history` so the UI and the workbook can show it.
       async function extractOne(url) {
         try {
           const r = await fetch('/api/extract', {
@@ -288,10 +312,11 @@ https://www.example.com/products/widget-b"
           });
           const data = await r.json();
           if (!r.ok) return { ok: false, error: data.error || ('HTTP ' + r.status) };
-          batch.push(data.product);
+          const product = { ...data.product, _history: data.history || null };
+          batch.push(product);
           saveBatch(batch);
           renderBatch();
-          return { ok: true, product: data.product };
+          return { ok: true, product };
         } catch (err) {
           return { ok: false, error: err.message };
         }

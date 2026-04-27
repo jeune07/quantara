@@ -34,8 +34,14 @@ function refOf(product) {
 }
 
 function addProductsSheet(wb, products) {
+  // Optional history columns are only shown when at least one product has a
+  // previous snapshot — keeps the sheet narrow when nobody uses the feature.
+  const anyHistory = products.some(
+    (p) => p && p._history && p._history.previous
+  );
+
   const ws = wb.addWorksheet('Products');
-  ws.columns = [
+  const columns = [
     { header: 'Ref', key: 'ref', width: 22 },
     { header: 'Title', key: 'title', width: 40 },
     { header: 'SKU', key: 'sku', width: 18 },
@@ -47,10 +53,19 @@ function addProductsSheet(wb, products) {
     { header: 'Source URL', key: 'sourceUrl', width: 50 },
     { header: 'Mode', key: 'mode', width: 14 },
   ];
+  if (anyHistory) {
+    columns.push(
+      { header: 'Previous Price', key: 'prevPrice', width: 14 },
+      { header: 'Δ Price', key: 'priceChange', width: 12 },
+      { header: 'Δ %', key: 'pricePercent', width: 10 },
+      { header: 'Last Seen', key: 'lastSeen', width: 20 }
+    );
+  }
+  ws.columns = columns;
   styleHeader(ws);
 
   for (const p of products) {
-    const row = ws.addRow({
+    const row = {
       ref: refOf(p),
       title: p.title || '',
       sku: p.sku || '',
@@ -61,8 +76,20 @@ function addProductsSheet(wb, products) {
       description: p.description || '',
       sourceUrl: p.sourceUrl || '',
       mode: p.extractionMode || '',
-    });
-    if (p.sourceUrl) hyperlinkCell(row.getCell('sourceUrl'), p.sourceUrl);
+    };
+    if (anyHistory) {
+      const prev = p._history && p._history.previous;
+      const delta = p._history && p._history.delta;
+      row.prevPrice = prev && prev.priceAmount != null ? prev.priceAmount : '';
+      row.priceChange = delta && delta.priceChange != null ? delta.priceChange : '';
+      row.pricePercent =
+        delta && delta.pricePercent != null
+          ? Number(delta.pricePercent.toFixed(2))
+          : '';
+      row.lastSeen = prev ? prev.extractedAt : '';
+    }
+    const xlRow = ws.addRow(row);
+    if (p.sourceUrl) hyperlinkCell(xlRow.getCell('sourceUrl'), p.sourceUrl);
   }
 }
 

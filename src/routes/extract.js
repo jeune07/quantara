@@ -1,6 +1,12 @@
 const express = require('express');
 const { extractFromUrl, ExtractError } = require('../extractor/extractFromUrl');
 const { productsToWorkbookBuffer } = require('../output/toExcel');
+const {
+  recordSnapshot,
+  getLatestSnapshot,
+  getHistory,
+  computeDelta,
+} = require('../db/snapshots');
 
 const router = express.Router();
 
@@ -58,15 +64,42 @@ function errorPayload(err) {
   return { status: 500, body: { error: err.message || 'Internal error' } };
 }
 
+// Run a side-effect that should never fail the main request. We log and
+// swallow — the user's extraction is more important than the snapshot.
+function safeCall(fn) {
+  try {
+    return fn();
+  } catch (err) {
+    console.warn('[extract] persistence error:', err.message);
+    return null;
+  }
+}
+
 router.post('/extract', async (req, res) => {
   const v = validateUrl(req.body && req.body.url);
   if (v.error) return res.status(400).json({ error: v.error });
   try {
+    // Order matters: read the prior snapshot *before* writing the new one
+    // so the delta compares to history, not to itself.
+    const previous = safeCall(() => getLatestSnapshot(v.url));
     const product = await extractFromUrl(v.url);
-    res.json({ product });
+    const delta = previous ? computeDelta(previous, product) : null;
+    safeCall(() => recordSnapshot(product));
+    res.json({ product, history: { previous, delta } });
   } catch (err) {
     const { status, body } = errorPayload(err);
     res.status(status).json(body);
+  }
+});
+
+router.get('/history', (req, res) => {
+  const v = validateUrl(req.query && req.query.url);
+  if (v.error) return res.status(400).json({ error: v.error });
+  try {
+    const history = getHistory(v.url, 50);
+    res.json({ url: v.url, history });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

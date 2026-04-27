@@ -32,3 +32,9 @@ catalog-page-list.json
 scrape.log
 patch.log
 .claude/scheduled_tasks.lock
+
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

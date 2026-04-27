@@ -34,6 +34,16 @@ const MATERIALS = (process.env.MATERIALS || '')
   .map((s) => s.trim().toLowerCase())
   .filter(Boolean);
 
+// Comma/whitespace-separated exact SKU list. When set, only rows with these
+// part numbers are kept. Applied after the MATERIALS filter.
+//   SKUS="98401A910,98401A409, 98401A413"
+const SKUS = new Set(
+  (process.env.SKUS || '')
+    .split(/[\s,]+/)
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean)
+);
+
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
@@ -322,6 +332,15 @@ function styleHeader(ws) {
     console.log(
       `Filtered to materials [${MATERIALS.join(', ')}]: ${rows.length} of ${before} rows`
     );
+  }
+
+  if (SKUS.size) {
+    const before = rows.length;
+    rows = rows.filter((r) => SKUS.has((r.sku || '').toUpperCase()));
+    console.log(`Filtered to ${SKUS.size} SKUs: ${rows.length} of ${before} rows`);
+    const matched = new Set(rows.map((r) => r.sku.toUpperCase()));
+    const missing = [...SKUS].filter((s) => !matched.has(s));
+    if (missing.length) console.log(`  Missing SKUs: ${missing.join(', ')}`);
   }
 
   const wb = writeWorkbook(rows);

@@ -18,8 +18,13 @@ const ExcelJS = require('exceljs');
 const path = require('path');
 
 const ROOT = 'https://www.mcmaster.com/products/cotter-pins/';
-const OUT = path.join(__dirname, 'cotter-pins-skus.xlsx');
+const OUT = process.env.OUT_FILE
+  ? path.resolve(process.env.OUT_FILE)
+  : path.join(__dirname, 'cotter-pins-skus.xlsx');
 
+// CATEGORY_URL: scrape a single category page directly (skips the landing
+// enumeration). When set, MAX_CATEGORIES is ignored.
+const CATEGORY_URL = process.env.CATEGORY_URL || '';
 const MAX_CATEGORIES = numEnv('MAX_CATEGORIES', Infinity);
 const MAX_SKUS_PER_CAT = numEnv('MAX_SKUS_PER_CAT', 25);
 const CONCURRENCY = numEnv('CONCURRENCY', 3);
@@ -67,53 +72,77 @@ async function getCategoryTiles(page) {
 }
 
 async function getSkuLinks(page, categoryUrl, cap) {
-  await page.goto(categoryUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-  await new Promise((r) => setTimeout(r, 3000));
-
-  // Scroll to coax lazy-loaded SKU rows into the DOM.
-  await page.evaluate(async (target) => {
-    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    let last = 0;
-    for (let i = 0; i < 30; i++) {
-      const found = document.querySelectorAll('a[href*="/"][href]').length;
-      window.scrollBy(0, 1500);
-      await sleep(400);
-      if (found === last && document.querySelectorAll('a').length > target) break;
-      last = found;
+  // McMaster's listing table is virtualized in the DOM, but the server-rendered
+  // ProdPageWebPart.aspx response contains every part number for the category.
+  // Capture that response and parse part numbers out of its HTML.
+  const bodies = [];
+  const onResponse = async (res) => {
+    if (res.url().includes('ProdPageWebPart')) {
+      try {
+        bodies.push(await res.text());
+      } catch {}
     }
-  }, cap);
+  };
+  page.on('response', onResponse);
 
-  const links = await page.evaluate(() => {
-    const set = new Set();
-    document.querySelectorAll('a[href]').forEach((a) => {
-      const href = a.getAttribute('href') || '';
-      // McMaster part-number URLs look like /98450A716/ or /98450A716
-      const m = href.match(/^\/?([0-9]{3,}[A-Z][A-Z0-9]+)\/?$/);
-      if (m) set.add('https://www.mcmaster.com/' + m[1] + '/');
+  try {
+    await page.goto(categoryUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+    await new Promise((r) => setTimeout(r, 4000));
+  } finally {
+    page.off('response', onResponse);
+  }
+
+  const set = new Set();
+  const partRe = /["\/>=]([0-9]{4,7}[A-Z][A-Z0-9]{1,8})["<\/]/g;
+  for (const body of bodies) {
+    let m;
+    while ((m = partRe.exec(body)) !== null) set.add(m[1]);
+  }
+
+  // Fallback: also harvest visible links from the DOM in case the response
+  // wasn't captured (e.g. cached by the browser).
+  if (set.size === 0) {
+    const fromDom = await page.evaluate(() => {
+      const out = new Set();
+      document.querySelectorAll('a[href]').forEach((a) => {
+        const m = (a.getAttribute('href') || '').match(/^\/?([0-9]{3,}[A-Z][A-Z0-9]+)\/?$/);
+        if (m) out.add(m[1]);
+      });
+      return [...out];
     });
-    return [...set];
-  });
+    fromDom.forEach((p) => set.add(p));
+  }
 
-  return links.slice(0, cap);
+  return [...set]
+    .slice(0, cap)
+    .map((p) => 'https://www.mcmaster.com/' + p + '/');
 }
 
-async function getSkuDetails(page, skuUrl) {
-  await page.goto(skuUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+async function getSkuDetails(page, skuUrl, retries = 1) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    await page.goto(skuUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+    try {
+      await page.waitForFunction(
+        () => {
+          const h1 = document.querySelector('h1');
+          return h1 && h1.innerText && h1.innerText.trim().length > 3;
+        },
+        { timeout: 20000 }
+      );
+    } catch {
+      /* fall through */
+    }
+    await new Promise((r) => setTimeout(r, 1500));
 
-  // Wait for the product title to render; SPA hydration is slow.
-  try {
-    await page.waitForFunction(
-      () => {
-        const h1 = document.querySelector('h1');
-        return h1 && h1.innerText && h1.innerText.trim().length > 3;
-      },
-      { timeout: 15000 }
-    );
-  } catch {
-    /* fall through — we'll still scrape what's there */
+    const result = await extractSkuFromPage(page);
+    if (result.title || result.specs && Object.keys(result.specs).length) return result;
+    // Empty — wait a beat and retry once.
+    if (attempt < retries) await new Promise((r) => setTimeout(r, 2000));
   }
-  await new Promise((r) => setTimeout(r, 1500));
+  return await extractSkuFromPage(page);
+}
 
+async function extractSkuFromPage(page) {
   return page.evaluate(() => {
     const txt = (el) => (el?.innerText || '').replace(/\s+/g, ' ').trim();
 
@@ -199,12 +228,27 @@ async function mapLimit(items, limit, fn) {
     args: ['--no-sandbox', '--disable-blink-features=AutomationControlled'],
   });
 
-  console.log(`Loading ${ROOT} ...`);
-  const root = await newPage(browser);
-  let categories = await getCategoryTiles(root);
-  await root.close();
-  console.log(`Found ${categories.length} categories.`);
-  if (Number.isFinite(MAX_CATEGORIES)) categories = categories.slice(0, MAX_CATEGORIES);
+  let categories;
+  if (CATEGORY_URL) {
+    console.log(`Single-category mode: ${CATEGORY_URL}`);
+    categories = [
+      {
+        title: 'Cotter Pins',
+        description: '',
+        productCount: null,
+        link: CATEGORY_URL,
+        img: '',
+      },
+    ];
+  } else {
+    console.log(`Loading ${ROOT} ...`);
+    const root = await newPage(browser);
+    categories = await getCategoryTiles(root);
+    await root.close();
+    console.log(`Found ${categories.length} categories.`);
+    if (Number.isFinite(MAX_CATEGORIES))
+      categories = categories.slice(0, MAX_CATEGORIES);
+  }
 
   // Walk categories sequentially, harvesting SKU links.
   const skuListPage = await newPage(browser);

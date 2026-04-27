@@ -26,6 +26,14 @@ const CATEGORY_URL =
   'https://www.mcmaster.com/products/cotter-pins/cotter-pins-3~~/';
 const OUT = path.resolve(process.env.OUT_FILE || 'cotter-pins-catalog.xlsx');
 
+// Comma-separated list of material names to keep (case-insensitive substring
+// match). When unset, every material is included.
+//   MATERIALS="18-8 Stainless Steel,316 Stainless Steel"
+const MATERIALS = (process.env.MATERIALS || '')
+  .split(',')
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
+
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
@@ -303,8 +311,18 @@ function styleHeader(ws) {
   children.forEach((c) =>
     console.log(`  - ${c.Display?.Title}: ${c.Table?.Rows?.length || 0} rows`)
   );
-  const rows = buildRows(children);
+  let rows = buildRows(children);
   console.log(`Total rows: ${rows.length}`);
+
+  if (MATERIALS.length) {
+    const before = rows.length;
+    rows = rows.filter((r) =>
+      MATERIALS.some((m) => (r.material || '').toLowerCase().includes(m))
+    );
+    console.log(
+      `Filtered to materials [${MATERIALS.join(', ')}]: ${rows.length} of ${before} rows`
+    );
+  }
 
   const wb = writeWorkbook(rows);
   await wb.xlsx.writeFile(OUT);

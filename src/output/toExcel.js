@@ -15,6 +15,7 @@
 
 const ExcelJS = require('exceljs');
 const { styleHeader, hyperlinkCell } = require('../utils/excel');
+const { categorizeUrl } = require('../discovery/categorizeRetailer');
 
 function priceString(price) {
   if (!price || typeof price !== 'object') return '';
@@ -285,12 +286,16 @@ function buildGroupSummaries(products) {
     const spread = max.amount - min.amount;
     const spreadPercent = min.amount === 0 ? null : (spread / min.amount) * 100;
     const currencies = [...new Set(g.items.map((i) => i.currency).filter(Boolean))];
+    const categories = [
+      ...new Set(g.items.map((i) => categorizeUrl(i.url).category).filter(Boolean)),
+    ].sort();
 
     summaries.push({
       id: g.id,
       canonicalName: g.canonicalName,
       members: g.items.length,
       currency: currencies.length === 1 ? currencies[0] : currencies.join('/'),
+      categories: categories.join(', '),
       minPrice: min.amount,
       maxPrice: max.amount,
       avgPrice: avg,
@@ -315,6 +320,7 @@ function addGroupSummarySheet(wb, products) {
     { header: 'Canonical Name', key: 'canonicalName', width: 40 },
     { header: 'Members', key: 'members', width: 9 },
     { header: 'Currency', key: 'currency', width: 10 },
+    { header: 'Categories', key: 'categories', width: 36 },
     { header: 'Min Price', key: 'minPrice', width: 11 },
     { header: 'Max Price', key: 'maxPrice', width: 11 },
     { header: 'Avg Price', key: 'avgPrice', width: 11 },
@@ -331,6 +337,7 @@ function addGroupSummarySheet(wb, products) {
       canonicalName: s.canonicalName,
       members: s.members,
       currency: s.currency,
+      categories: s.categories,
       minPrice: Number(s.minPrice.toFixed(2)),
       maxPrice: Number(s.maxPrice.toFixed(2)),
       avgPrice: Number(s.avgPrice.toFixed(2)),

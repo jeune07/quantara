@@ -1,17 +1,28 @@
-// Cross-retailer discovery.
+// Cross-retailer discovery — orchestrator.
 //
 // Given one extracted product, find pages on *other* retailers selling the
-// same item. We let Claude drive: it has the web_search server-side tool
-// for discovery and a custom record_competitors tool for the structured
-// reply. The orchestrator (route) feeds the candidates back through
-// /api/extract so the user ends up with an extracted batch they can group
-// + summarize.
+// same item. Stages:
 //
-// Output is a list of {url, retailer, confidence, reason} objects.
-// Defensive cleanup: dedupes by hostname, drops candidates that share a
-// hostname with the source, drops anything that fails URL parsing.
+//   1. Ask Claude (with the web_search server-side tool) to discover
+//      candidate URLs and emit them via the record_competitors custom tool.
+//   2. URL hygiene: filterCandidateUrls drops search/category/blog pages,
+//      enforces per-retailer product-page patterns, dedupes by hostname,
+//      and excludes the source domain.
+//   3. Taxonomy: categorizeRetailer tags each survivor with a category
+//      (authorized / big-box / marketplace / specialty-refurb / wholesale-
+//      b2b / wholesale-international / fashion / home / outdoor-sports /
+//      auto / carriers / books / office / long-tail).
+//
+// Returns enriched candidate objects ready for the UI to queue through
+// /api/extract:
+//   { url, retailer, category, tier, trust, confidence, reason }
+//
+// Stages 2–3 run as pure code on Claude's output, so the UI sees clean
+// data even if Claude's discovery overshoots or returns junk URLs.
 
 const { getClient, MODEL, logUsage } = require('../utils/anthropic');
+const { filterCandidateUrls, hostnameOf } = require('./filterCandidateUrls');
+const { categorizeUrl } = require('./categorizeRetailer');
 
 const MAX_TOKENS = 2048;
 
@@ -45,27 +56,10 @@ const recordCompetitorsTool = {
           type: 'object',
           required: ['url', 'retailer'],
           properties: {
-            url: {
-              type: 'string',
-              description: 'Direct URL to the product page on the retailer.',
-            },
-            retailer: {
-              type: 'string',
-              description:
-                'Retailer name (e.g. "Amazon", "Best Buy", "Sony Direct").',
-            },
-            confidence: {
-              type: 'string',
-              enum: ['high', 'medium', 'low'],
-              description:
-                'How confident you are this is the same product as the source.',
-            },
-            reason: {
-              type: 'string',
-              description:
-                'One short sentence on why this is a match (matching SKU, ' +
-                'brand+model, or other evidence).',
-            },
+            url: { type: 'string' },
+            retailer: { type: 'string' },
+            confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
+            reason: { type: 'string' },
           },
         },
       },
@@ -75,16 +69,6 @@ const recordCompetitorsTool = {
 
 const webSearchTool = { type: 'web_search_20260209', name: 'web_search' };
 
-function hostnameOf(url) {
-  try {
-    return new URL(url).hostname.replace(/^www\./i, '').toLowerCase();
-  } catch {
-    return '';
-  }
-}
-
-// Build a compact "this is the product" block for Claude. Skip description
-// and full specs — title + brand + sku is enough to fingerprint.
 function describeProduct(product) {
   const lines = [];
   if (product.title) lines.push('Title: ' + product.title);
@@ -95,11 +79,7 @@ function describeProduct(product) {
   return lines.join('\n');
 }
 
-async function findCompetitors(product) {
-  if (!product || (!product.title && !product.sku)) {
-    throw new Error('findCompetitors requires a product with at least a title or sku');
-  }
-
+async function callClaude(product) {
   const sourceHost = hostnameOf(product.sourceUrl || '');
   const userText =
     'Find this product on other retailers. Skip the source domain itself' +
@@ -118,7 +98,7 @@ async function findCompetitors(product) {
     messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
   });
 
-  logUsage('find-competitors', response.usage);
+  logUsage('discover', response.usage);
 
   if (response.stop_reason === 'pause_turn') {
     throw new Error(
@@ -126,40 +106,45 @@ async function findCompetitors(product) {
         'a more specific product (brand + SKU work best).'
     );
   }
-
   const toolUse = response.content.find(
     (b) => b.type === 'tool_use' && b.name === 'record_competitors'
   );
   if (!toolUse) {
-    throw new Error(
-      'Claude finished without calling record_competitors. Try again.'
-    );
+    throw new Error('Claude finished without calling record_competitors. Try again.');
   }
-
-  const raw = Array.isArray(toolUse.input.candidates) ? toolUse.input.candidates : [];
-  return cleanCandidates(raw, sourceHost);
+  return Array.isArray(toolUse.input.candidates) ? toolUse.input.candidates : [];
 }
 
-// Defensive normalization. Bad URLs, source-domain leakage, and per-hostname
-// duplicates all get dropped. Order is preserved (Claude's ranking).
-function cleanCandidates(rawCandidates, sourceHost) {
-  const seenHosts = new Set();
-  if (sourceHost) seenHosts.add(sourceHost);
-  const out = [];
-  for (const c of rawCandidates) {
-    if (!c || typeof c !== 'object' || !c.url) continue;
-    const host = hostnameOf(c.url);
-    if (!host) continue;
-    if (seenHosts.has(host)) continue;
-    seenHosts.add(host);
-    out.push({
-      url: c.url,
-      retailer: c.retailer || host,
-      confidence: c.confidence || 'medium',
-      reason: c.reason || '',
-    });
+// Public entry point used by the route. Composes the three stages.
+async function discoverCompetitors(product) {
+  if (!product || (!product.title && !product.sku)) {
+    throw new Error('discoverCompetitors requires a product with at least a title or sku');
   }
-  return out;
+
+  const raw = await callClaude(product);
+
+  // Stage 2: URL hygiene. We feed only the URLs through the filter so we
+  // can re-attach Claude's per-candidate metadata afterwards.
+  const byUrl = new Map(raw.map((c) => [c.url, c]));
+  const cleanUrls = filterCandidateUrls(
+    raw.map((c) => c && c.url).filter(Boolean),
+    product.sourceUrl
+  );
+
+  // Stage 3: categorize.
+  return cleanUrls.map((url) => {
+    const meta = byUrl.get(url) || {};
+    const category = categorizeUrl(url);
+    return {
+      url,
+      retailer: meta.retailer || category.name,
+      category: category.category,
+      tier: category.tier,
+      trust: category.trust,
+      confidence: meta.confidence || 'medium',
+      reason: meta.reason || '',
+    };
+  });
 }
 
-module.exports = { findCompetitors };
+module.exports = { discoverCompetitors };

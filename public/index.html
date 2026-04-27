@@ -196,6 +196,17 @@ https://www.example.com/products/widget-b"
         </div>
       </details>
 
+      <details class="bulk">
+        <summary>Import from PDF catalog (text-based PDFs, max 10 MB)</summary>
+        <div class="bulk-body">
+          <input id="pdfFile" type="file" accept=".pdf,application/pdf" />
+          <div class="row">
+            <button id="pdfImport" type="button" disabled>Extract products from PDF</button>
+            <span id="pdfPreview" class="status" style="margin: 0; align-self: center;"></span>
+          </div>
+        </div>
+      </details>
+
       <div id="status" class="status"></div>
 
       <section id="latest" class="panel hidden">
@@ -234,6 +245,9 @@ https://www.example.com/products/widget-b"
       const urlsText = $('urlsText');
       const bulkImport = $('bulkImport');
       const bulkPreview = $('bulkPreview');
+      const pdfFile = $('pdfFile');
+      const pdfImport = $('pdfImport');
+      const pdfPreview = $('pdfPreview');
 
       const BULK_CONCURRENCY = 2;
 
@@ -593,6 +607,44 @@ https://www.example.com/products/widget-b"
         await Promise.all(workers);
         return results;
       }
+
+      // ---- PDF import ---------------------------------------------------
+      pdfFile.addEventListener('change', () => {
+        const f = pdfFile.files && pdfFile.files[0];
+        pdfImport.disabled = !f;
+        pdfPreview.textContent = f
+          ? f.name + ' (' + (f.size / 1024).toFixed(0) + ' KB)'
+          : '';
+      });
+
+      pdfImport.addEventListener('click', async () => {
+        const f = pdfFile.files && pdfFile.files[0];
+        if (!f) return;
+        pdfImport.disabled = true;
+        latest.classList.add('hidden');
+        setStatus('Reading PDF and asking Claude... this can take 10–30 s.');
+        try {
+          const fd = new FormData();
+          fd.append('file', f);
+          const r = await fetch('/api/extract-pdf', { method: 'POST', body: fd });
+          const data = await r.json();
+          if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+          const products = (data.products || []).map((p) => ({ ...p, _history: null }));
+          for (const p of products) batch.push(p);
+          saveBatch(batch);
+          renderBatch();
+          setStatus(
+            'Added ' + products.length + ' product(s) from ' + (data.filename || 'PDF') +
+              '. Batch now has ' + batch.length + '.'
+          );
+          pdfFile.value = '';
+          pdfPreview.textContent = '';
+          pdfImport.disabled = true;
+        } catch (err) {
+          setStatus(err.message, 'error');
+          pdfImport.disabled = !pdfFile.files || !pdfFile.files[0];
+        }
+      });
 
       bulkImport.addEventListener('click', async () => {
         const urls = parseUrlsFromText(urlsText.value);

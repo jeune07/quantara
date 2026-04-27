@@ -1,5 +1,7 @@
 const express = require('express');
+const multer = require('multer');
 const { extractFromUrl, ExtractError } = require('../extractor/extractFromUrl');
+const { extractFromPdf } = require('../extractor/extractFromPdf');
 const { productsToWorkbookBuffer } = require('../output/toExcel');
 const {
   recordSnapshot,
@@ -9,6 +11,12 @@ const {
 } = require('../db/snapshots');
 
 const router = express.Router();
+
+const MAX_PDF_BYTES = 10 * 1024 * 1024; // 10 MB
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_PDF_BYTES, files: 1 },
+});
 
 const MAX_PRODUCTS_PER_WORKBOOK = 500;
 
@@ -86,6 +94,19 @@ router.post('/extract', async (req, res) => {
     const delta = previous ? computeDelta(previous, product) : null;
     safeCall(() => recordSnapshot(product));
     res.json({ product, history: { previous, delta } });
+  } catch (err) {
+    const { status, body } = errorPayload(err);
+    res.status(status).json(body);
+  }
+});
+
+router.post('/extract-pdf', upload.single('file'), async (req, res) => {
+  if (!req.file || !req.file.buffer || req.file.buffer.length === 0) {
+    return res.status(400).json({ error: 'file is required (multipart field "file")' });
+  }
+  try {
+    const products = await extractFromPdf(req.file.buffer, req.file.originalname);
+    res.json({ products, filename: req.file.originalname });
   } catch (err) {
     const { status, body } = errorPayload(err);
     res.status(status).json(body);

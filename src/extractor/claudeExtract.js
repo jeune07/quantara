@@ -1,5 +1,5 @@
 const Anthropic = require('@anthropic-ai/sdk');
-const { recordProductTool } = require('./productSchema');
+const { recordProductTool, recordProductsTool } = require('./productSchema');
 
 const MODEL = 'claude-sonnet-4-6';
 const MAX_TOKENS = 4096;
@@ -81,6 +81,40 @@ async function extractFromText({ markdown, sourceUrl, pageTitle }) {
   return { ...input, sourceUrl };
 }
 
+// Multi-product extraction — used for catalog inputs (PDFs today; could
+// also fit a category-listing page later). Reuses the same system prompt
+// and the same cache_control prefix as extractFromText, so back-to-back
+// calls amortize.
+async function extractProductsFromCatalog({ text, sourceLabel }) {
+  const c = getClient();
+  const userText =
+    `Source: ${sourceLabel || '(unlabeled catalog)'}\n` +
+    'The text below is a catalog or price list. Identify every distinct ' +
+    'product and call record_products once with an array of all of them.\n' +
+    '\n--- BEGIN CATALOG TEXT ---\n' +
+    text +
+    '\n--- END CATALOG TEXT ---';
+
+  const response = await c.messages.create({
+    model: MODEL,
+    max_tokens: 8192,
+    system: [
+      { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
+    ],
+    tools: [{ ...recordProductsTool, cache_control: { type: 'ephemeral' } }],
+    tool_choice: { type: 'tool', name: 'record_products' },
+    messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
+  });
+
+  logUsage('catalog', response.usage);
+
+  const toolUse = response.content.find((b) => b.type === 'tool_use');
+  if (!toolUse || !Array.isArray(toolUse.input.products)) {
+    throw new Error('Claude did not return a products array');
+  }
+  return toolUse.input.products.map((p) => ({ ...p, sourceUrl: sourceLabel || '' }));
+}
+
 async function extractFromImage({ screenshot, sourceUrl, pageTitle, markdownHint }) {
   const blocks = [
     {
@@ -114,4 +148,9 @@ async function extractFromImage({ screenshot, sourceUrl, pageTitle, markdownHint
   return { ...input, sourceUrl };
 }
 
-module.exports = { extractFromText, extractFromImage, MODEL };
+module.exports = {
+  extractFromText,
+  extractFromImage,
+  extractProductsFromCatalog,
+  MODEL,
+};

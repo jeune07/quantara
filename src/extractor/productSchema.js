@@ -82,4 +82,33 @@ const recordProductTool = {
   input_schema: productInputSchema,
 };
 
-module.exports = { productInputSchema, recordProductTool };
+// Multi-product variant — used for catalog/PDF inputs where one document
+// describes many SKUs. Same per-product shape, wrapped in a {products: []}.
+const productsInputSchema = {
+  type: 'object',
+  required: ['products'],
+  properties: {
+    products: {
+      type: 'array',
+      description:
+        'One entry per distinct product visible in the catalog. If the same ' +
+        'product appears on multiple pages, list it once.',
+      items: productInputSchema,
+    },
+  },
+};
+
+const recordProductsTool = {
+  name: 'record_products',
+  description:
+    'Record every distinct product described in the catalog text. Leave ' +
+    'fields empty rather than guessing.',
+  input_schema: productsInputSchema,
+};
+
+module.exports = {
+  productInputSchema,
+  productsInputSchema,
+  recordProductTool,
+  recordProductsTool,
+};

@@ -88,6 +88,34 @@
       }
       .remove:hover { color: var(--error); }
       .empty { color: var(--muted); padding: 8px 0; }
+      details.bulk {
+        margin-top: 12px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 4px 12px;
+      }
+      details.bulk[open] { padding-bottom: 12px; }
+      details.bulk summary {
+        cursor: pointer;
+        padding: 8px 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      details.bulk summary:hover { color: var(--text); }
+      .bulk-body { display: grid; gap: 8px; }
+      .bulk-body textarea {
+        min-height: 100px;
+        padding: 8px 10px;
+        background: var(--bg);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace;
+        resize: vertical;
+      }
+      .bulk-body textarea:focus { outline: none; border-color: var(--accent); }
+      .bulk-body input[type="file"] { color: var(--muted); font-size: 12px; }
     </style>
   </head>
   <body>
@@ -109,6 +137,25 @@
         />
         <button class="primary" id="submit" type="submit">Extract</button>
       </form>
+
+      <details class="bulk">
+        <summary>Bulk import URLs (paste a list or upload CSV)</summary>
+        <div class="bulk-body">
+          <input id="csvFile" type="file" accept=".csv,.txt,text/csv,text/plain" />
+          <textarea
+            id="urlsText"
+            placeholder="One URL per line, or paste CSV — the first column is read as the URL.
+
+https://www.example.com/products/widget-a
+https://www.example.com/products/widget-b"
+          ></textarea>
+          <div class="row">
+            <button id="bulkImport" type="button">Import URLs</button>
+            <span id="bulkPreview" class="status" style="margin: 0; align-self: center;"></span>
+          </div>
+        </div>
+      </details>
+
       <div id="status" class="status"></div>
 
       <section id="latest" class="panel hidden">
@@ -143,6 +190,12 @@
       const countEl = $('count');
       const downloadBtn = $('download');
       const clearBtn = $('clear');
+      const csvFile = $('csvFile');
+      const urlsText = $('urlsText');
+      const bulkImport = $('bulkImport');
+      const bulkPreview = $('bulkPreview');
+
+      const BULK_CONCURRENCY = 2;
 
       function loadBatch() {
         try {
@@ -224,13 +277,9 @@
         });
       }
 
-      form.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const url = urlInput.value.trim();
-        if (!url) return;
-        submit.disabled = true;
-        latest.classList.add('hidden');
-        setStatus('Rendering page and asking Claude...');
+      // Single extract — used by both the form and bulk import.
+      // Returns { ok: true, product } | { ok: false, error }.
+      async function extractOne(url) {
         try {
           const r = await fetch('/api/extract', {
             method: 'POST',
@@ -238,29 +287,143 @@
             body: JSON.stringify({ url }),
           });
           const data = await r.json();
-          if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
-
-          jsonOut.textContent = JSON.stringify(data.product, null, 2);
-          latest.classList.remove('hidden');
-
+          if (!r.ok) return { ok: false, error: data.error || ('HTTP ' + r.status) };
           batch.push(data.product);
           saveBatch(batch);
           renderBatch();
-
-          const mode = data.product && data.product.extractionMode;
-          const note = mode ? ' (mode: ' + mode + ')' : '';
-          const kind = mode && mode.indexOf('low-confidence') !== -1 ? 'warn' : null;
-          setStatus(
-            'Added to batch. ' + batch.length + ' product' +
-              (batch.length === 1 ? '' : 's') + ' total.' + note,
-            kind
-          );
-          urlInput.value = '';
-          urlInput.focus();
+          return { ok: true, product: data.product };
         } catch (err) {
-          setStatus(err.message, 'error');
-        } finally {
-          submit.disabled = false;
+          return { ok: false, error: err.message };
+        }
+      }
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const url = urlInput.value.trim();
+        if (!url) return;
+        submit.disabled = true;
+        latest.classList.add('hidden');
+        setStatus('Rendering page and asking Claude...');
+
+        const result = await extractOne(url);
+        submit.disabled = false;
+
+        if (!result.ok) {
+          setStatus(result.error, 'error');
+          return;
+        }
+        jsonOut.textContent = JSON.stringify(result.product, null, 2);
+        latest.classList.remove('hidden');
+        const mode = result.product.extractionMode || '';
+        const note = mode ? ' (mode: ' + mode + ')' : '';
+        const kind = mode.indexOf('low-confidence') !== -1 ? 'warn' : null;
+        setStatus(
+          'Added to batch. ' + batch.length + ' product' +
+            (batch.length === 1 ? '' : 's') + ' total.' + note,
+          kind
+        );
+        urlInput.value = '';
+        urlInput.focus();
+      });
+
+      // ---- Bulk import --------------------------------------------------
+      // Accepts a textarea or a file. Parses URLs (one per line; if a line
+      // looks like a CSV row, the URL is in the first field). Then runs a
+      // small concurrency-limited queue so we don't hammer the server.
+
+      function parseUrlsFromText(text) {
+        if (!text) return [];
+        const lines = text.split(/\r?\n/);
+        const urls = [];
+        const seen = new Set();
+        for (const line of lines) {
+          // Strip BOM, take first comma-separated field, trim quotes.
+          const first = line.replace(/^﻿/, '').split(',')[0].trim().replace(/^"|"$/g, '');
+          if (!first) continue;
+          if (/^url$/i.test(first)) continue; // header row
+          let parsed;
+          try { parsed = new URL(first); } catch { continue; }
+          if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') continue;
+          const normalized = parsed.toString();
+          if (seen.has(normalized)) continue;
+          seen.add(normalized);
+          urls.push(normalized);
+        }
+        return urls;
+      }
+
+      function updateBulkPreview() {
+        const urls = parseUrlsFromText(urlsText.value);
+        bulkPreview.textContent = urls.length
+          ? urls.length + ' URL' + (urls.length === 1 ? '' : 's') + ' detected'
+          : '';
+      }
+      urlsText.addEventListener('input', updateBulkPreview);
+
+      csvFile.addEventListener('change', async () => {
+        const file = csvFile.files && csvFile.files[0];
+        if (!file) return;
+        try {
+          const text = await file.text();
+          urlsText.value = text;
+          updateBulkPreview();
+        } catch (err) {
+          setStatus('Could not read file: ' + err.message, 'error');
+        }
+      });
+
+      async function runQueue(urls, concurrency, onProgress) {
+        const results = { ok: 0, failed: 0, errors: [] };
+        let nextIndex = 0;
+        async function worker() {
+          while (true) {
+            const i = nextIndex++;
+            if (i >= urls.length) return;
+            const url = urls[i];
+            const r = await extractOne(url);
+            if (r.ok) results.ok++;
+            else {
+              results.failed++;
+              results.errors.push({ url, error: r.error });
+            }
+            onProgress(results.ok + results.failed, urls.length, url);
+          }
+        }
+        const workers = [];
+        for (let i = 0; i < Math.min(concurrency, urls.length); i++) {
+          workers.push(worker());
+        }
+        await Promise.all(workers);
+        return results;
+      }
+
+      bulkImport.addEventListener('click', async () => {
+        const urls = parseUrlsFromText(urlsText.value);
+        if (urls.length === 0) {
+          setStatus('No valid URLs detected in the input.', 'error');
+          return;
+        }
+        bulkImport.disabled = true;
+        submit.disabled = true;
+        latest.classList.add('hidden');
+        setStatus('Importing ' + urls.length + ' URL(s)... 0/' + urls.length);
+
+        const results = await runQueue(urls, BULK_CONCURRENCY, (done, total) => {
+          setStatus('Importing... ' + done + '/' + total);
+        });
+
+        bulkImport.disabled = false;
+        submit.disabled = false;
+
+        const summary =
+          'Bulk import done: ' + results.ok + ' added, ' + results.failed + ' failed.';
+        if (results.failed > 0) {
+          console.warn('Bulk import errors:', results.errors);
+          setStatus(summary + ' (See console for failed URLs.)', 'warn');
+        } else {
+          setStatus(summary);
+          urlsText.value = '';
+          updateBulkPreview();
         }
       });
 

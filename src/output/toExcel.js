@@ -3,10 +3,12 @@
 // One workbook covers any number of products. Sheets are flat tables, which
 // scale to 1 product or 1,000 without growing the tab count:
 //
-//   Products  — one row per product (the catalog overview)
-//   Specs     — long format: row per (product, spec key) pair
-//   Images    — long format: row per (product, image url) pair
-//   Variants  — long format, only added if at least one product has variants
+//   Products       — one row per product (the catalog overview)
+//   Specs          — long format: row per (product, spec key) pair
+//   Images         — long format: row per (product, image url) pair
+//   Variants       — long format, only added if any product has variants
+//   Group Summary  — only added once products have been grouped AND at
+//                    least one group has comparable numeric prices
 //
 // Each row is keyed by `Ref` — the product's SKU when present, else its
 // title — so the user can sort/filter/pivot in Excel without lookups.
@@ -31,6 +33,25 @@ function priceCurrency(price) {
 
 function refOf(product) {
   return product.sku || product.title || product.sourceUrl || '(unnamed)';
+}
+
+// Hostname of a product's source URL, with the `www.` prefix stripped so
+// "amazon.com" and "www.amazon.com" don't read as different retailers.
+// Returns '' when the URL is missing or invalid (e.g. PDF-sourced products
+// where sourceUrl is "pdf:filename.pdf").
+function retailerOf(product) {
+  if (!product || !product.sourceUrl) return '';
+  try {
+    return new URL(product.sourceUrl).hostname.replace(/^www\./i, '');
+  } catch {
+    return '';
+  }
+}
+
+function priceAmount(product) {
+  return product && product.price && typeof product.price.amount === 'number'
+    ? product.price.amount
+    : null;
 }
 
 // Server-side mirror of the client's computeMargin. Centralizing the formula
@@ -228,6 +249,110 @@ function addVariantsSheet(wb, products) {
   }
 }
 
+// Per-group price summary. Built only when products have been grouped
+// (each member carries `_group.id`) AND at least one group has two or more
+// members with numeric prices to compare.
+function buildGroupSummaries(products) {
+  const buckets = new Map(); // groupId → { canonicalName, items: [{amount, currency, retailer, ref, url}] }
+
+  for (const p of products) {
+    if (!p || !p._group) continue;
+    const amt = priceAmount(p);
+    if (amt == null) continue;
+    const id = p._group.id;
+    if (!buckets.has(id)) {
+      buckets.set(id, {
+        id,
+        canonicalName: p._group.canonicalName || ('Group ' + id),
+        items: [],
+      });
+    }
+    buckets.get(id).items.push({
+      amount: amt,
+      currency: priceCurrency(p.price),
+      retailer: retailerOf(p),
+      ref: refOf(p),
+      url: p.sourceUrl || '',
+    });
+  }
+
+  const summaries = [];
+  for (const g of buckets.values()) {
+    if (g.items.length === 0) continue;
+    const min = g.items.reduce((a, b) => (b.amount < a.amount ? b : a));
+    const max = g.items.reduce((a, b) => (b.amount > a.amount ? b : a));
+    const avg = g.items.reduce((s, x) => s + x.amount, 0) / g.items.length;
+    const spread = max.amount - min.amount;
+    const spreadPercent = min.amount === 0 ? null : (spread / min.amount) * 100;
+    const currencies = [...new Set(g.items.map((i) => i.currency).filter(Boolean))];
+
+    summaries.push({
+      id: g.id,
+      canonicalName: g.canonicalName,
+      members: g.items.length,
+      currency: currencies.length === 1 ? currencies[0] : currencies.join('/'),
+      minPrice: min.amount,
+      maxPrice: max.amount,
+      avgPrice: avg,
+      spread,
+      spreadPercent,
+      cheapestRetailer: min.retailer,
+      cheapestUrl: min.url,
+      mostExpensiveRetailer: max.retailer,
+      mostExpensiveUrl: max.url,
+    });
+  }
+  return summaries.sort((a, b) => a.id - b.id);
+}
+
+function addGroupSummarySheet(wb, products) {
+  const summaries = buildGroupSummaries(products);
+  if (summaries.length === 0) return; // nothing to summarize
+
+  const ws = wb.addWorksheet('Group Summary');
+  ws.columns = [
+    { header: 'Group #', key: 'id', width: 8 },
+    { header: 'Canonical Name', key: 'canonicalName', width: 40 },
+    { header: 'Members', key: 'members', width: 9 },
+    { header: 'Currency', key: 'currency', width: 10 },
+    { header: 'Min Price', key: 'minPrice', width: 11 },
+    { header: 'Max Price', key: 'maxPrice', width: 11 },
+    { header: 'Avg Price', key: 'avgPrice', width: 11 },
+    { header: 'Spread $', key: 'spread', width: 11 },
+    { header: 'Spread %', key: 'spreadPercent', width: 10 },
+    { header: 'Cheapest Retailer', key: 'cheapestRetailer', width: 24 },
+    { header: 'Most Expensive Retailer', key: 'mostExpensiveRetailer', width: 24 },
+  ];
+  styleHeader(ws);
+
+  for (const s of summaries) {
+    const row = ws.addRow({
+      id: s.id,
+      canonicalName: s.canonicalName,
+      members: s.members,
+      currency: s.currency,
+      minPrice: Number(s.minPrice.toFixed(2)),
+      maxPrice: Number(s.maxPrice.toFixed(2)),
+      avgPrice: Number(s.avgPrice.toFixed(2)),
+      spread: Number(s.spread.toFixed(2)),
+      spreadPercent:
+        s.spreadPercent != null ? Number(s.spreadPercent.toFixed(2)) : '',
+      cheapestRetailer: s.cheapestRetailer,
+      mostExpensiveRetailer: s.mostExpensiveRetailer,
+    });
+    if (s.cheapestUrl) {
+      hyperlinkCell(row.getCell('cheapestRetailer'), s.cheapestUrl, s.cheapestRetailer);
+    }
+    if (s.mostExpensiveUrl) {
+      hyperlinkCell(
+        row.getCell('mostExpensiveRetailer'),
+        s.mostExpensiveUrl,
+        s.mostExpensiveRetailer
+      );
+    }
+  }
+}
+
 async function productsToWorkbookBuffer(products) {
   if (!Array.isArray(products) || products.length === 0) {
     throw new Error('productsToWorkbookBuffer requires a non-empty array');
@@ -241,6 +366,7 @@ async function productsToWorkbookBuffer(products) {
   addSpecsSheet(wb, products);
   addImagesSheet(wb, products);
   addVariantsSheet(wb, products);
+  addGroupSummarySheet(wb, products);
 
   return await wb.xlsx.writeBuffer();
 }

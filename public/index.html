@@ -13,6 +13,7 @@
         --muted: #9aa0a8;
         --accent: #4f8cff;
         --error: #ff6b6b;
+        --warn: #f5b54a;
       }
       * { box-sizing: border-box; }
       body {
@@ -22,77 +23,82 @@
         background: var(--bg);
         color: var(--text);
       }
-      header {
-        padding: 20px 24px;
-        border-bottom: 1px solid var(--border);
-      }
+      header { padding: 20px 24px; border-bottom: 1px solid var(--border); }
       h1 { margin: 0; font-size: 18px; font-weight: 600; }
       .sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
       main { padding: 24px; max-width: 1100px; margin: 0 auto; }
       .row { display: flex; gap: 8px; align-items: stretch; }
       input[type="url"] {
-        flex: 1;
-        padding: 10px 12px;
-        background: var(--panel);
-        color: var(--text);
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        font-size: 14px;
+        flex: 1; padding: 10px 12px;
+        background: var(--panel); color: var(--text);
+        border: 1px solid var(--border); border-radius: 6px; font-size: 14px;
       }
-      input[type="url"]:focus {
-        outline: none;
-        border-color: var(--accent);
-      }
+      input[type="url"]:focus { outline: none; border-color: var(--accent); }
       button {
-        padding: 10px 16px;
-        border-radius: 6px;
-        border: 1px solid var(--border);
-        background: var(--panel);
-        color: var(--text);
-        font-size: 14px;
-        cursor: pointer;
+        padding: 10px 16px; border-radius: 6px;
+        border: 1px solid var(--border); background: var(--panel);
+        color: var(--text); font-size: 14px; cursor: pointer;
       }
-      button.primary {
-        background: var(--accent);
-        border-color: var(--accent);
-        color: white;
-      }
+      button.primary { background: var(--accent); border-color: var(--accent); color: white; }
+      button.danger { color: var(--error); }
       button:disabled { opacity: 0.5; cursor: not-allowed; }
       .status { margin-top: 12px; color: var(--muted); font-size: 13px; }
       .status.error { color: var(--error); }
+      .status.warn { color: var(--warn); }
       .panel {
-        margin-top: 24px;
-        background: var(--panel);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 16px;
+        margin-top: 24px; background: var(--panel);
+        border: 1px solid var(--border); border-radius: 8px; padding: 16px;
       }
       .panel h2 {
-        margin: 0 0 12px;
-        font-size: 13px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        color: var(--muted);
+        margin: 0 0 12px; font-size: 13px; font-weight: 600;
+        text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted);
+        display: flex; justify-content: space-between; align-items: baseline;
       }
+      .panel h2 .count { font-weight: 400; color: var(--muted); }
       pre {
-        margin: 0;
-        white-space: pre-wrap;
-        word-break: break-word;
+        margin: 0; max-height: 320px; overflow: auto;
+        white-space: pre-wrap; word-break: break-word;
         font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace;
         color: var(--text);
       }
-      .actions { margin-top: 12px; display: flex; gap: 8px; }
+      .actions { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
       .hidden { display: none; }
+      ul.products { list-style: none; padding: 0; margin: 0; }
+      ul.products li {
+        display: grid;
+        grid-template-columns: 1fr auto auto;
+        gap: 12px; align-items: baseline;
+        padding: 8px 0; border-bottom: 1px solid var(--border);
+      }
+      ul.products li:last-child { border-bottom: none; }
+      .pname { color: var(--text); }
+      .pname .meta { color: var(--muted); font-size: 12px; }
+      .pname a { color: var(--accent); text-decoration: none; }
+      .pname a:hover { text-decoration: underline; }
+      .mode {
+        font-size: 11px; padding: 2px 6px; border-radius: 4px;
+        background: #20232a; color: var(--muted);
+      }
+      .mode.text { color: #6dd58a; }
+      .mode.vision { color: var(--warn); }
+      .mode.hybrid { color: var(--accent); }
+      .remove {
+        background: transparent; border: none; color: var(--muted);
+        padding: 2px 6px; cursor: pointer; font-size: 13px;
+      }
+      .remove:hover { color: var(--error); }
+      .empty { color: var(--muted); padding: 8px 0; }
     </style>
   </head>
   <body>
     <header>
       <h1>quantara</h1>
       <div class="sub">
-        Paste a product URL. Claude reads the page and returns structured data.
+        Paste a product URL. Each extraction adds to the list. Download once
+        when you're done — every product lands in the same workbook.
       </div>
     </header>
+
     <main>
       <form id="form" class="row" autocomplete="off">
         <input
@@ -105,28 +111,117 @@
       </form>
       <div id="status" class="status"></div>
 
-      <div id="result" class="panel hidden">
-        <h2>Result</h2>
+      <section id="latest" class="panel hidden">
+        <h2>Most recent extraction</h2>
         <pre id="json"></pre>
+      </section>
+
+      <section id="batch" class="panel">
+        <h2>
+          <span>Batch</span>
+          <span class="count" id="count">0 products</span>
+        </h2>
+        <ul id="list" class="products"></ul>
         <div class="actions">
-          <button id="download">Download .xlsx</button>
+          <button id="download" class="primary" disabled>Download .xlsx</button>
+          <button id="clear" class="danger" disabled>Clear all</button>
         </div>
-      </div>
+      </section>
     </main>
 
     <script>
+      const STORAGE_KEY = 'quantara.batch.v1';
       const $ = (id) => document.getElementById(id);
+
       const form = $('form');
       const urlInput = $('url');
       const submit = $('submit');
       const status = $('status');
-      const result = $('result');
+      const latest = $('latest');
       const jsonOut = $('json');
-      const download = $('download');
+      const listEl = $('list');
+      const countEl = $('count');
+      const downloadBtn = $('download');
+      const clearBtn = $('clear');
 
-      function setStatus(msg, isError) {
+      function loadBatch() {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          return raw ? JSON.parse(raw) : [];
+        } catch {
+          return [];
+        }
+      }
+      function saveBatch(items) {
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+        } catch {
+          // localStorage may be unavailable / full — silently fall back to
+          // in-memory only. The batch still works for the current session.
+        }
+      }
+
+      let batch = loadBatch();
+
+      function setStatus(msg, kind) {
         status.textContent = msg;
-        status.classList.toggle('error', !!isError);
+        status.classList.remove('error', 'warn');
+        if (kind === 'error') status.classList.add('error');
+        else if (kind === 'warn') status.classList.add('warn');
+      }
+
+      function renderBatch() {
+        listEl.innerHTML = '';
+        countEl.textContent =
+          batch.length === 1 ? '1 product' : batch.length + ' products';
+        downloadBtn.disabled = batch.length === 0;
+        clearBtn.disabled = batch.length === 0;
+
+        if (batch.length === 0) {
+          const li = document.createElement('li');
+          li.className = 'empty';
+          li.textContent = 'No products yet. Paste a URL above to start.';
+          listEl.appendChild(li);
+          return;
+        }
+
+        batch.forEach((p, i) => {
+          const li = document.createElement('li');
+
+          const name = document.createElement('div');
+          name.className = 'pname';
+          const title = document.createElement('div');
+          title.textContent = p.title || '(untitled)';
+          const meta = document.createElement('div');
+          meta.className = 'meta';
+          const sku = p.sku ? p.sku + ' — ' : '';
+          const a = document.createElement('a');
+          a.href = p.sourceUrl || '#';
+          a.target = '_blank';
+          a.rel = 'noopener';
+          a.textContent = p.sourceUrl || '';
+          meta.append(sku);
+          meta.append(a);
+          name.append(title, meta);
+
+          const mode = document.createElement('span');
+          const m = (p.extractionMode || '').split('-')[0];
+          mode.className = 'mode ' + (m || '');
+          mode.textContent = p.extractionMode || '';
+
+          const rm = document.createElement('button');
+          rm.className = 'remove';
+          rm.title = 'Remove from batch';
+          rm.textContent = '✕';
+          rm.addEventListener('click', () => {
+            batch.splice(i, 1);
+            saveBatch(batch);
+            renderBatch();
+          });
+
+          li.append(name, mode, rm);
+          listEl.appendChild(li);
+        });
       }
 
       form.addEventListener('submit', async (e) => {
@@ -134,7 +229,7 @@
         const url = urlInput.value.trim();
         if (!url) return;
         submit.disabled = true;
-        result.classList.add('hidden');
+        latest.classList.add('hidden');
         setStatus('Rendering page and asking Claude...');
         try {
           const r = await fetch('/api/extract', {
@@ -143,37 +238,50 @@
             body: JSON.stringify({ url }),
           });
           const data = await r.json();
-          if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+          if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+
           jsonOut.textContent = JSON.stringify(data.product, null, 2);
-          result.classList.remove('hidden');
+          latest.classList.remove('hidden');
+
+          batch.push(data.product);
+          saveBatch(batch);
+          renderBatch();
+
           const mode = data.product && data.product.extractionMode;
-          setStatus('Done.' + (mode ? ' (mode: ' + mode + ')' : ''));
+          const note = mode ? ' (mode: ' + mode + ')' : '';
+          const kind = mode && mode.indexOf('low-confidence') !== -1 ? 'warn' : null;
+          setStatus(
+            'Added to batch. ' + batch.length + ' product' +
+              (batch.length === 1 ? '' : 's') + ' total.' + note,
+            kind
+          );
+          urlInput.value = '';
+          urlInput.focus();
         } catch (err) {
-          setStatus(err.message, true);
+          setStatus(err.message, 'error');
         } finally {
           submit.disabled = false;
         }
       });
 
-      download.addEventListener('click', async () => {
-        const url = urlInput.value.trim();
-        if (!url) return;
-        download.disabled = true;
-        setStatus('Building workbook...');
+      downloadBtn.addEventListener('click', async () => {
+        if (batch.length === 0) return;
+        downloadBtn.disabled = true;
+        setStatus('Building workbook with ' + batch.length + ' product(s)...');
         try {
-          const r = await fetch('/api/extract.xlsx', {
+          const r = await fetch('/api/workbook', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url }),
+            body: JSON.stringify({ products: batch }),
           });
           if (!r.ok) {
             const data = await r.json().catch(() => ({}));
-            throw new Error(data.error || `HTTP ${r.status}`);
+            throw new Error(data.error || ('HTTP ' + r.status));
           }
           const blob = await r.blob();
           const cd = r.headers.get('Content-Disposition') || '';
           const m = cd.match(/filename="([^"]+)"/);
-          const filename = m ? m[1] : 'product.xlsx';
+          const filename = m ? m[1] : 'quantara.xlsx';
           const a = document.createElement('a');
           a.href = URL.createObjectURL(blob);
           a.download = filename;
@@ -181,11 +289,25 @@
           URL.revokeObjectURL(a.href);
           setStatus('Downloaded ' + filename + '.');
         } catch (err) {
-          setStatus(err.message, true);
+          setStatus(err.message, 'error');
         } finally {
-          download.disabled = false;
+          downloadBtn.disabled = batch.length === 0;
         }
       });
+
+      clearBtn.addEventListener('click', () => {
+        if (batch.length === 0) return;
+        if (!confirm('Clear all ' + batch.length + ' product(s) from the batch?')) {
+          return;
+        }
+        batch = [];
+        saveBatch(batch);
+        latest.classList.add('hidden');
+        renderBatch();
+        setStatus('Batch cleared.');
+      });
+
+      renderBatch();
     </script>
   </body>
 </html>
